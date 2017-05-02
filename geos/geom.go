@@ -9,7 +9,6 @@ import (
 	"errors"
 	"math"
 	"runtime"
-	"unsafe"
 )
 
 // Geometry represents a geometry object, which can be any one of the types of
@@ -99,29 +98,6 @@ func (g *Geometry) WKB() ([]byte, error) {
 func (g *Geometry) Hex() ([]byte, error) {
 	encoder := newWkbEncoder()
 	return encoder.encodeHex(g)
-}
-
-// Linearref functions
-
-// Project returns distance of point projected on this geometry from origin.
-// This must be a lineal geometry.
-func (g *Geometry) Project(p *Geometry) float64 {
-	// XXX: error if wrong geometry types
-	return float64(cGEOSProject(g.g, p.g))
-}
-
-// ProjectNormalized returns distance of point projected on this geometry from
-// origin, divided by its length.
-// This must be a lineal geometry.
-func (g *Geometry) ProjectNormalized(p *Geometry) float64 {
-	// XXX: error if wrong geometry types
-	return float64(cGEOSProjectNormalized(g.g, p.g))
-}
-
-// Interpolate returns the closest point to given distance within geometry.
-// This geometry must be a LineString.
-func (g *Geometry) Interpolate(dist float64) (*Geometry, error) {
-	return geomFromC("Interpolate", cGEOSInterpolate(g.g, C.double(dist)))
 }
 
 var (
@@ -257,15 +233,6 @@ func interpolatePoint2D(a, b *Geometry, dist float64) (*Geometry, error) {
 	return NewPoint(coord)
 }
 
-// Buffer computes a new geometry as the dilation (position amount) or erosion
-// (negative amount) of the geometry -- a sum or difference, respectively, of
-// the geometry with a circle of radius of the absolute value of the buffer
-// amount.
-func (g *Geometry) Buffer(d float64) (*Geometry, error) {
-	const quadsegs = 8
-	return geomFromC("Buffer", cGEOSBuffer(g.g, C.double(d), quadsegs))
-}
-
 // CapStyle is the style of the cap at the end of a line segment.
 type CapStyle int
 
@@ -302,29 +269,6 @@ type BufferOpts struct {
 	JoinStyle JoinStyle
 	// MitreLimit is the limit in the amount of a mitred join.
 	MitreLimit float64
-}
-
-// BufferWithOpts computes a new geometry as the dilation (position amount) or erosion
-// (negative amount) of the geometry -- a sum or difference, respectively, of
-// the geometry with a circle of radius of the absolute value of the buffer
-// amount.
-//
-// BufferWithOpts gives the user more control than Buffer over the parameters of
-// the buffering, including:
-//
-//  - # of quadrant segments (defaults to 8 in Buffer)
-//  - mitre limit (defaults to 5.0 in Buffer)
-//  - end cap style (see CapStyle consts)
-//  - join style (see JoinStyle consts)
-func (g *Geometry) BufferWithOpts(width float64, opts BufferOpts) (*Geometry, error) {
-	return geomFromC("BufferWithOpts", cGEOSBufferWithStyle(g.g, C.double(width), C.int(opts.QuadSegs), C.int(opts.CapStyle), C.int(opts.JoinStyle), C.double(opts.MitreLimit)))
-}
-
-// OffsetCurve computes a new linestring that is offset from the input
-// linestring by the given distance and buffer options.  A negative distance is
-// offset on the right side; positive distance offset on the left side.
-func (g *Geometry) OffsetCurve(distance float64, opts BufferOpts) (*Geometry, error) {
-	return geomFromC("OffsetCurve", cGEOSOffsetCurve(g.g, C.double(distance), C.int(opts.QuadSegs), C.int(opts.JoinStyle), C.double(opts.MitreLimit)))
 }
 
 // Geometry Constructors
@@ -451,12 +395,6 @@ func (g *Geometry) Envelope() (*Geometry, error) {
 	return g.unaryTopo("Envelope", cGEOSEnvelope)
 }
 
-// ConvexHull computes the smallest convex geometry that contains all the points
-// of the geometry.
-func (g *Geometry) ConvexHull() (*Geometry, error) {
-	return g.unaryTopo("ConvexHull", cGEOSConvexHull)
-}
-
 // Boundary is the boundary of the geometry.
 func (g *Geometry) Boundary() (*Geometry, error) {
 	return g.unaryTopo("Boundary", cGEOSBoundary)
@@ -468,22 +406,9 @@ func (g *Geometry) UnaryUnion() (*Geometry, error) {
 	return g.unaryTopo("UnaryUnion", cGEOSUnaryUnion)
 }
 
-// PointOnSurface computes a point geometry guaranteed to be on the surface of
-// the geometry.
-func (g *Geometry) PointOnSurface() (*Geometry, error) {
-	return g.unaryTopo("PointOnSurface", cGEOSPointOnSurface)
-}
-
 // Centroid is the center point of the geometry.
 func (g *Geometry) Centroid() (*Geometry, error) {
 	return g.unaryTopo("Centroid", cGEOSGetCentroid)
-}
-
-// LineMerge will merge together a collection of LineStrings where they touch
-// only at their start and end points. The LineStrings must be fully noded. The
-// resulting geometry is a new collection.
-func (g *Geometry) LineMerge() (*Geometry, error) {
-	return g.unaryTopo("LineMerge", cGEOSLineMerge)
 }
 
 // Simplify returns a geometry simplified by amount given by tolerance.
@@ -498,49 +423,12 @@ func (g *Geometry) SimplifyP(tolerance float64) (*Geometry, error) {
 	return g.simplify("simplify", cGEOSTopologyPreserveSimplify, tolerance)
 }
 
-// UniquePoints return all distinct vertices of input geometry as a MultiPoint.
-func (g *Geometry) UniquePoints() (*Geometry, error) {
-	return g.unaryTopo("UniquePoints", cGEOSGeom_extractUniquePoints)
-}
-
-// SharedPaths finds paths shared between the two given lineal geometries.
-// Returns a GeometryCollection having two elements:
-//	- first element is a MultiLineString containing shared paths having the _same_ direction on both inputs
-//	- second element is a MultiLineString containing shared paths having the _opposite_ direction on the two inputs
-func (g *Geometry) SharedPaths(other *Geometry) (*Geometry, error) {
-	return g.binaryTopo("SharedPaths", cGEOSSharedPaths, other)
-}
-
-// Snap returns a new geometry where the geometry is snapped to the given
-// geometry by given tolerance.
-func (g *Geometry) Snap(other *Geometry, tolerance float64) (*Geometry, error) {
-	return geomFromC("Snap", cGEOSSnap(g.g, other.g, C.double(tolerance)))
-}
-
-// Prepare returns a new prepared geometry from the geometry -- see PGeometry
-func (g *Geometry) Prepare() *PGeometry {
-	return PrepareGeometry(g)
-}
-
 // Binary topology functions
 
 // Intersection returns a new geometry representing the points shared by this
 // geometry and the other.
 func (g *Geometry) Intersection(other *Geometry) (*Geometry, error) {
 	return g.binaryTopo("Intersection", cGEOSIntersection, other)
-}
-
-// Difference returns a new geometry representing the points making up this
-// geometry that do not make up the other.
-func (g *Geometry) Difference(other *Geometry) (*Geometry, error) {
-	return g.binaryTopo("Difference", cGEOSDifference, other)
-}
-
-// SymDifference returns a new geometry representing the set combining the
-// points in this geometry not in the other, and the points in the other
-// geometry and not in this.
-func (g *Geometry) SymDifference(other *Geometry) (*Geometry, error) {
-	return g.binaryTopo("SymDifference", cGEOSSymDifference, other)
 }
 
 // Union returns a new geometry representing all points in this geometry and the
@@ -551,27 +439,10 @@ func (g *Geometry) Union(other *Geometry) (*Geometry, error) {
 
 // Binary predicate functions
 
-// Disjoint returns true if the two geometries have no point in common.
-func (g *Geometry) Disjoint(other *Geometry) (bool, error) {
-	return g.binaryPred("Disjoint", cGEOSDisjoint, other)
-}
-
-// Touches returns true if the two geometries have at least one point in common,
-// but their interiors do not intersect.
-func (g *Geometry) Touches(other *Geometry) (bool, error) {
-	return g.binaryPred("Touches", cGEOSTouches, other)
-}
-
 // Intersects returns true if the two geometries have at least one point in
 // common.
 func (g *Geometry) Intersects(other *Geometry) (bool, error) {
 	return g.binaryPred("Intersects", cGEOSIntersects, other)
-}
-
-// Crosses returns true if the two geometries have some but not all interior
-// points in common.
-func (g *Geometry) Crosses(other *Geometry) (bool, error) {
-	return g.binaryPred("Crosses", cGEOSCrosses, other)
 }
 
 // Within returns true if every point of this geometry is a point of the other,
@@ -586,29 +457,10 @@ func (g *Geometry) Contains(other *Geometry) (bool, error) {
 	return g.binaryPred("Contains", cGEOSContains, other)
 }
 
-// Overlaps returns true if the geometries have some but not all points in
-// common, they have the same dimension, and the intersection of the interiors
-// of the two geometries has the same dimension as the geometries themselves.
-func (g *Geometry) Overlaps(other *Geometry) (bool, error) {
-	return g.binaryPred("Overlaps", cGEOSOverlaps, other)
-}
-
 // Equals returns true if the two geometries have at least one point in common,
 // and no point of either geometry lies in the exterior of the other geometry.
 func (g *Geometry) Equals(other *Geometry) (bool, error) {
 	return g.binaryPred("Equals", cGEOSEquals, other)
-}
-
-// Covers returns true if every point of the other geometry is a point of this
-// geometry.
-func (g *Geometry) Covers(other *Geometry) (bool, error) {
-	return g.binaryPred("Covers", cGEOSCovers, other)
-}
-
-// CoveredBy returns true if every point of this geometry is a point of the
-// other geometry.
-func (g *Geometry) CoveredBy(other *Geometry) (bool, error) {
-	return g.binaryPred("CoveredBy", cGEOSCoveredBy, other)
 }
 
 // EqualsExact returns true if both geometries are Equal, as evaluated by their
@@ -821,29 +673,6 @@ func (g *Geometry) HausdorffDistance(other *Geometry) (float64, error) {
 func (g *Geometry) HausdorffDistanceDensify(other *Geometry, densifyFrac float64) (float64, error) {
 	var d C.double
 	return float64FromC("HausdorffDistanceDensify", cGEOSHausdorffDistanceDensify(g.g, other.g, C.double(densifyFrac), &d), d)
-}
-
-// DE-9IM
-
-// Relate computes the intersection matrix (Dimensionally Extended
-// Nine-Intersection Model (DE-9IM) matrix) for the spatial relationship between
-// the two geometries.
-func (g *Geometry) Relate(other *Geometry) (string, error) {
-	cs := cGEOSRelate(g.g, other.g)
-	if cs == nil {
-		return "", Error()
-	}
-	s := C.GoString(cs)
-	//cGEOSFree(unsafe.Pointer(cs))
-	return s, nil
-}
-
-// RelatePat returns true if the DE-9IM matrix equals the intersection matrix of
-// the two geometries.
-func (g *Geometry) RelatePat(other *Geometry, pat string) (bool, error) {
-	cs := C.CString(pat)
-	defer C.free(unsafe.Pointer(cs))
-	return boolFromC("RelatePat", cGEOSRelatePattern(g.g, other.g, cs))
 }
 
 // various wrappers around C API
